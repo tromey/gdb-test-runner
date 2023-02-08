@@ -169,6 +169,52 @@ proc run_one_test {jobno expfile} {
   chan event $fd readable [list accept_output $jobno $fd]
 }
 
+
+proc accept_output_noop {jobno channel} {
+  if {[chan gets $channel line] == -1} {
+    # Might not really be EOF.
+    if {[chan eof $channel]} {
+      catch {chan close $channel}
+      job_finished $jobno
+    }
+  }
+  # Just ignore the output.
+}
+
+# Find either gdb.sum or gdb.log files corresponding to $all_files.
+proc find_sum_or_log {suffix} {
+  global all_files
+  set result {}
+  foreach expfile $all_files {
+    # EXPFILE is gdb.x/y.exp and we want outputs/gdb.x/y/gdb.suff
+    set name outputs/[file rootname $expfile]/gdb.$suffix
+    if {[file exists $name]} {
+      lappend result $name
+    }
+  }
+  return $result
+}
+
+proc run_one_post_task {jobno name} {
+  global srcdir
+  switch -- $name {
+    "gdb.sum" {
+      # The tee is lame but if we redirect here, Tcl won't let us
+      # accept output.
+      set cmdline "$srcdir/../../contrib/dg-extract-results.sh [find_sum_or_log sum] | tee gdb.sum"
+    }
+    "gdb.log" {
+      set cmdline "$srcdir/../../contrib/dg-extract-results.sh -L [find_sum_or_log log] | tee gdb.log"    }
+    "corefiles" {
+      set cmdline $srcdir/lib/dg-add-core-file-count.sh
+    }
+  }
+
+  set fd [open "| $cmdline"]
+  chan configure $fd -blocking 0 -buffering line
+  chan event $fd readable [list accept_output $jobno $fd]
+}
+
 proc go {} {
   global go_button state_count
   $go_button configure -state disabled
@@ -180,6 +226,8 @@ proc go {} {
   reset_job_groups
   global all_files
   add_job_group run_one_test $all_files
+  add_job_group run_one_post_task {gdb.sum gdb.log}
+  add_job_group run_one_post_task corefiles
 
   start_next_job_group
 }
