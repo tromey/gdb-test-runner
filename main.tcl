@@ -103,10 +103,7 @@ proc start_new_test {jobno} {
 
   if {[llength $all_files] == 0} {
     set job_state($jobno) "DONE"
-    global go_button
-    if {$jobs_running == 0} {
-      $go_button configure -state active
-    }
+    re_enable_go_button
     return
   }
 
@@ -138,5 +135,12 @@ proc go {} {
 
   for {set i 0} {$i < $ncpus} {incr i} {
     start_new_test $i
+  }
+}
+
+proc re_enable_go_button {} {
+  global go_button
+  if {$jobs_running == 0} {
+    $go_button configure -state active
   }
 }
