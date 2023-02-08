@@ -14,7 +14,6 @@ if {[llength $argv] == 0} {
   set argv [list ${tool}.*/*.exp]
 }
 set all_files [lsort [glob -tails -directory $srcdir {*}${argv}]]
-set saved_all_files $all_files
 
 set ncpus [exec nproc]
 
@@ -81,15 +80,77 @@ pack .main.buttons -side top -fill x -padx 4 -pady 4
 set go_button [button .main.buttons.go -text Go -command go]
 pack .main.buttons.go -side top -padx 4 -pady 4
 
+# job_groups(N,start) is the name of the function for this group.
+# job_groups(N,list) is the list of jobs.
+array set job_groups {}
+set current_job_group 0
+
+proc reset_job_groups {} {
+  global job_groups current_job_group
+  array set job_groups {}
+  set current_job_group 0
+
+  global jobs_completed jobs_running
+  set jobs_completed 0
+  set jobs_running 0
+}
+
+proc add_job_group {start_func job_list} {
+  global job_groups
+  set n [expr {[array size job_groups] / 2}]
+  set job_groups($n,start) $start_func
+  set job_groups($n,list) $job_list
+}
+
+proc start_next_job {jobno} {
+  global job_groups current_job_group job_state jobs_running
+
+  if {[llength $job_groups($current_job_group,list)] == 0} {
+    # No more tasks in this group.
+    set job_state($jobno) "DONE"
+    if {$jobs_running == 0} {
+      # Group is completely done, try the next one.
+      incr current_job_group
+      start_next_job_group
+    }
+  } else {
+    set name [lindex $job_groups($current_job_group,list) 0]
+    set job_groups($current_job_group,list) \
+      [lreplace $job_groups($current_job_group,list) 0 0]
+
+    set job_state($jobno) $name
+    incr jobs_running
+    $job_groups($current_job_group,start) $jobno $name
+  }
+}
+
+proc job_finished {jobno} {
+  global jobs_completed jobs_running
+  incr jobs_completed
+  incr jobs_running -1
+  start_next_job $jobno
+}
+
+proc start_next_job_group {} {
+  global current_job_group job_groups
+
+  if {$current_job_group == [array size job_groups] / 2} {
+    # All jobs groups have completed.
+    re_enable_go_button
+  } else {
+    global ncpus
+    for {set i 0} {$i < $ncpus} {incr i} {
+      start_next_job $i
+    }
+  }
+}
+
 proc accept_output {jobno channel} {
   if {[chan gets $channel line] == -1} {
     # Might not really be EOF.
     if {[chan eof $channel]} {
-      global jobs_completed jobs_running
-      incr jobs_completed
-      incr jobs_running -1
       catch {chan close $channel}
-      start_new_test $jobno
+      job_finished $jobno
     }
   } elseif {[regexp "^# of (\[a-z \]*\[a-z\])\[ \t\]+(\[0-9\]+)$" \
 	       $line ignore name num]} {
@@ -98,21 +159,7 @@ proc accept_output {jobno channel} {
   }
 }
 
-proc start_new_test {jobno} {
-  global all_files job_state jobs_running
-
-  if {[llength $all_files] == 0} {
-    set job_state($jobno) "DONE"
-    re_enable_go_button
-    return
-  }
-
-  set expfile [lindex $all_files 0]
-  set all_files [lreplace $all_files 0 0]
-
-  set job_state($jobno) $expfile
-  incr jobs_running
-
+proc run_one_test {jobno expfile} {
   # EXPFILE is gdb.x/y.exp and we want outputs/gdb.x/y
   set outdir outputs/[file rootname $expfile]
   file mkdir $outdir
@@ -123,24 +170,21 @@ proc start_new_test {jobno} {
 }
 
 proc go {} {
-  global ncpus go_button state_count
+  global go_button state_count
   $go_button configure -state disabled
 
   foreach name [array names state_count] {
     set state_count($name) 0
   }
 
-  global all_files saved_all_files
-  set all_files $saved_all_files
+  reset_job_groups
+  global all_files
+  add_job_group run_one_test $all_files
 
-  for {set i 0} {$i < $ncpus} {incr i} {
-    start_new_test $i
-  }
+  start_next_job_group
 }
 
 proc re_enable_go_button {} {
   global go_button
-  if {$jobs_running == 0} {
-    $go_button configure -state active
-  }
+  $go_button configure -state active
 }
